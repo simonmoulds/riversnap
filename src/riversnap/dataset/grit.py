@@ -39,14 +39,11 @@ class GRIT(VectorHydrographyData):
         candidates_list = []
         for continent in self.continents:
             riv = self.load_data(continent, target_crs=3857) # Why 3857?
-            candidates = self.snap_points_to_lines(pts, riv, id_column, distance_threshold=10000)
+            candidates = self.snap_points_to_lines(pts, riv, id_column, distance_threshold=distance_threshold)
             if candidates is not None:
+                # This happens if there are no candidates within the distance threshold
                 candidates_list.append(candidates)
 
         candidates = pd.concat(candidates_list)
         candidates = candidates.sort_values(by=[id_column, 'distance_m'])
         return candidates
-
-    def snap(self, pts, id_column, distance_threshold, floor_m: float = 100., w_dist: float = 0.5, return_all=False): 
-        df = self.snap_candidates(pts, id_column, floor_m=floor_m, w_dist=w_dist, distance_confidence_threshold=distance_threshold, hydrorivers=False, return_all=return_all)
-        return df 
