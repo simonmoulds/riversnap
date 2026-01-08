@@ -3,30 +3,50 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd 
 
-from sklearn.preprocessing import MinMaxScaler
 from pathlib import Path
-
-from riversnap.dataset.distance import compute_candidate_distances_from_plan
+from riversnap.utils.distance import compute_candidate_distances_from_plan
 
 EPS = 1e-12
 
 class HydrographyData:
+    """Base class for hydrography data sources."""
     def __init__(self, root):
+        """Initialize a hydrography data source.
+
+        Parameters
+        ----------
+        root : str or pathlib.Path
+            Root directory containing hydrography data files.
+        """
         self.root = Path(root)
         self.data = None
         self._candidates_cache = None
         self._candidates_cache_key = None
 
     def get_candidates(self): 
+        """Return candidate line features for the given points.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Candidate features for each point.
+        """
         raise NotImplementedError
 
     def load_data(self):
+        """Load source data from disk or a remote store.
+
+        Returns
+        -------
+        object
+            Loaded dataset object.
+        """
         raise NotImplementedError
 
 
 class VectorHydrographyData(HydrographyData):
-
-    def get_crs(self):
+    """Base class for vector-based hydrography datasets."""
+    def _get_crs(self):
         if self.data is not None:
             return self.data.crs
         else:
@@ -43,7 +63,6 @@ class VectorHydrographyData(HydrographyData):
 
         geom_wkb = pts.geometry.apply(lambda geom: geom.wkb)
         return (
-            id_column,
             distance_threshold,
             str(pts.crs),
             len(pts),
@@ -62,6 +81,8 @@ class VectorHydrographyData(HydrographyData):
             Input points to be snapped.
         lns : GeoDataFrame
             Input lines to snap points to.
+        id_column : str
+            Name of the column in `pts` that contains unique point IDs.
         distance_threshold : float, optional
             Maximum snapping distance in the units of the coordinate 
             reference system (CRS). Lines farther than this distance from 
@@ -103,7 +124,7 @@ class VectorHydrographyData(HydrographyData):
         else:
             return None
 
-    def get_candidates_from_cache(self, pts, id_column, distance_threshold): 
+    def _get_candidates_from_cache(self, pts, id_column, distance_threshold): 
         cache_key = self._make_candidates_cache_key(
             pts=pts,
             id_column=id_column,
@@ -125,8 +146,32 @@ class VectorHydrographyData(HydrographyData):
              distance_plan: list = None,
              aggregation_method: str = "weighted_mean",
              return_all=False): 
+        """Snap points to candidate lines and compute distances.
 
-        candidates = self.get_candidates_from_cache(pts, id_column, distance_threshold)
+        Parameters
+        ----------
+        pts : geopandas.GeoDataFrame
+            Point features to snap.
+        id_column : str
+            Name of the unique identifier column in ``pts``.
+        distance_threshold : float
+            Maximum search radius in CRS units.
+        distance_lower_threshold : float, optional
+            Minimum distance used when clipping candidate distances.
+        distance_plan : list, optional
+            Distance plan passed to ``compute_candidate_distances_from_plan``.
+        aggregation_method : str, optional
+            Aggregation method for component distances.
+        return_all : bool, optional
+            If True, return all candidates with distances.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Snapped candidates with computed distances.
+        """
+
+        candidates = self._get_candidates_from_cache(pts, id_column, distance_threshold)
         candidates['distance_m'] = candidates['distance_m'].clip(lower=distance_lower_threshold)
         df = compute_candidate_distances_from_plan(
             candidates,
@@ -148,7 +193,6 @@ class VectorHydrographyData(HydrographyData):
 
 
 # class RasterHydrographyData(HydrographyData):
-
 #     def get_bounds(self):
 #         if self.data is not None:
 #             return self.data.total_bounds
