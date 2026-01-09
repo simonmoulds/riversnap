@@ -1,3 +1,3 @@
 # Riversnap :crocodile:
 
-Python package scaffold for the Riversnap project.
+Python package for snapping points and lines to a river network. 

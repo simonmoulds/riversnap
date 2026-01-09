@@ -72,7 +72,7 @@ class VectorHydrographyData(HydrographyData):
         
     def snap_points_to_lines(self, pts, lns, id_column, distance_threshold=1500): 
         """
-        Snap points [e.g. gauging stations] to lines [e.g. river reaches] 
+        Snap points [e.g. gauging stations] to lines [e.g. river reaches]
         within a given distance threshold.
 
         Parameters
@@ -84,8 +84,8 @@ class VectorHydrographyData(HydrographyData):
         id_column : str
             Name of the column in `pts` that contains unique point IDs.
         distance_threshold : float, optional
-            Maximum snapping distance in the units of the coordinate 
-            reference system (CRS). Lines farther than this distance from 
+            Maximum snapping distance in the units of the coordinate
+            reference system (CRS). Lines farther than this distance from
             any given point will be discarded. Default is 1500.
 
         Returns
@@ -143,7 +143,7 @@ class VectorHydrographyData(HydrographyData):
              id_column, 
              distance_threshold, 
              distance_lower_threshold: float = 100., 
-             distance_plan: list = None,
+             distance_specification: list = None,
              aggregation_method: str = "weighted_mean",
              return_all=False): 
         """Snap points to candidate lines and compute distances.
@@ -172,15 +172,17 @@ class VectorHydrographyData(HydrographyData):
         """
 
         candidates = self._get_candidates_from_cache(pts, id_column, distance_threshold)
+
+        # keep_cols = [self.global_id, id_column, 'distance_m']
+        # candidates = candidates[keep_cols]
+
         candidates['distance_m'] = candidates['distance_m'].clip(lower=distance_lower_threshold)
         df = compute_candidate_distances_from_plan(
             candidates,
-            distance_plan=distance_plan, 
+            specs=distance_specification, 
             aggregation_method=aggregation_method, 
             require_any=True, 
         )
-
-        # TODO implement confidence flags etc. here
 
         # Select best row per ohdb_id
         df = df.sort_values([id_column, "distance"], ascending=[True, True])

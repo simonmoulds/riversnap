@@ -23,6 +23,8 @@ class GRIT(VectorHydrographyData):
         """
         super().__init__(root)
         self.scale = 'segments' if segments else 'reaches'
+        self.global_id = 'global_id' if segments else 'tbc'
+
         if continents is None: 
             self.continents = self.VALID_CONTINENTS
         else:

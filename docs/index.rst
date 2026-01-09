@@ -9,5 +9,6 @@ The source code is available on `GitHub <https://githib.com/simonmoulds/riversna
    :caption: Contents
 
    quickstart
+   distance
    usage
    api
