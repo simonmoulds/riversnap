@@ -368,7 +368,7 @@ def get_catchment_area_spec(dataset: str, reference_col: str, weight: float = 1.
 class DistanceReport:
     used: List[str]                     # component names used
     skipped: List[Tuple[str, str]]      # (component name, reason)
-    # skipped: List[Tuple[str, str]]      # (component name, reason)
+    attribute_cols: List[str]
     distance_component_cols: List[str]  # d_<name> columns produced
     weights: Dict[str, float]           # name -> weight
     diagnostic_cols: List[str]
@@ -416,6 +416,7 @@ def compute_candidate_distances_from_plan(
     # Compute component distances
     used: List[str] = [] 
     skipped: List[str] = []
+    attribute_cols: List[str] = []
     distance_component_cols: List[str] = []
     weights: Dict[str, float] = {}
     diagnostic_cols: List[str] = []
@@ -444,8 +445,9 @@ def compute_candidate_distances_from_plan(
             df[dcol] = dist_fn(cand_series, ref_series)  # type: ignore[misc]
 
         used.append(s.name)
-        # if s.ref_col:
-        #     distance_component_cols.append(s.ref_col)
+        if s.ref_col:
+            attribute_cols.append(s.ref_col)
+        attribute_cols.append(s.cand_col)
         distance_component_cols.append(dcol)
         weights[s.name] = float(s.weight)
 
@@ -486,6 +488,7 @@ def compute_candidate_distances_from_plan(
     report = DistanceReport(
         used=used,
         skipped=skipped,
+        attribute_cols=attribute_cols,
         distance_component_cols=distance_component_cols,
         weights=weights,
         diagnostic_cols=diagnostic_cols,

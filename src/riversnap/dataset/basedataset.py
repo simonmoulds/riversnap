@@ -183,9 +183,13 @@ class VectorHydrographyData(HydrographyData):
             aggregation_method=aggregation_method, 
             require_any=True, 
         )
-
-        # keep_cols = [self.global_id] + report.used + report.distance_component_cols + report.diagnostic_cols + ['distance']
-        keep_cols = [id_column, self.global_id] + report.distance_component_cols + report.diagnostic_cols + ['distance']
+        keep_cols = (
+            [id_column, self.global_id] 
+            + report.attribute_cols 
+            + report.distance_component_cols 
+            + report.diagnostic_cols
+            + ['distance']
+        )
         df = df[keep_cols] 
 
         # Select best row per ohdb_id
