@@ -5,14 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
-import inspect
 import numpy as np
 import pandas as pd
 
 EPS = 1e-12
 
 # Distance helpers
-# def d_log_ratio(cand: pd.Series, ref: pd.Series, *, eps: float = 0.0) -> pd.Series:
 def d_log_ratio(cand: pd.Series, ref: pd.Series) -> pd.Series:
     """Compute absolute log-ratio distance.
 
@@ -130,16 +128,6 @@ class DiagnosticContext:
     d: Optional[pd.Series]   # component distance d_<name>
 
 
-# @dataclass(frozen=True)
-# class DistanceSpec:
-#     """Specification for a single distance component."""
-#     name: str
-#     cand_col: str
-#     dist_fn: Callable[..., pd.Series]
-#     ref_col: Optional[str] = None
-#     weight: float = 1.0
-#     diagnostics: Sequence[str] = ()
-#     kwargs: Mapping[str, Any] = None  # extra args to dist_fn
 class DistanceSpec:
     """
     Specification for a single distance component used in snapping.
@@ -163,6 +151,7 @@ class DistanceSpec:
                 f"Unknown distance function archetype '{dist_fn}' "
                 f"for component '{self.name}'"
             )
+
         self.dist_key = dist_fn
         self.dist_fn = DIST_ARCHETYPES[dist_fn]
 
@@ -201,7 +190,7 @@ class DistanceSpec:
         return cls(**item)
 
 
-DiagFn = Callable[[DiagnosticContext], pd.Series]
+_DiagFn = Callable[[DiagnosticContext], pd.Series]
 
 
 def diag_m(ctx: DiagnosticContext) -> pd.Series:
@@ -250,63 +239,13 @@ DEFAULT_DIAGNOSTICS: Dict[str, Sequence[str]] = {
 }
 
 
-DIAGNOSTICS: dict[str, DiagFn] = {
+DIAGNOSTICS: dict[str, _DiagFn] = {
     "m": diag_m,
     "pp": diag_pp,
     "pct": diag_pct,
     "factor": diag_factor,
     "err": diag_err,
 }
-
-
-# def make_distance_spec_from_dict(item: Mapping[str, Any]) -> DistanceSpec:
-#     """Build a DistanceSpec from a distance-plan item.
-
-#     Parameters
-#     ----------
-#     item : Mapping[str, Any]
-#         Distance component definition. 
-
-#     Returns
-#     -------
-#     DistanceSpec
-#         Parsed distance specification.
-#     """
-#     # Check required keys are present
-#     required_keys = {"name", "dist_fn", "cand_col"}
-#     missing = [k for k in required_keys if k not in item]
-#     if missing:
-#         raise ValueError(f"Distance plan item missing required keys: {missing}")
-
-#     # Parse fields, making sure distance function is callable
-#     name = str(item["name"])
-#     dist_fn = str(item["dist_fn"])
-#     if dist_fn not in DIST_ARCHETYPES:
-#         raise ValueError(f"Unknown distance function archetype '{dist_fn}' for component '{name}'")
-#     # dist_fn = DIST_ARCHETYPES[item["dist_fn"]]
-#     # if not inspect.isfunction(dist_fn):
-#     #     raise ValueError(f"Distance function for '{name}' is not callable")
-#     diags = item.get("diagnostics", DEFAULT_DIAGNOSTICS.get(dist_fn, ()))
-
-#     # TODO check diagnostics 
-
-#     weight = float(item.get("weight", 1.0))
-#     cand_col = str(item["cand_col"])
-#     ref_col = item.get("ref_col", None)
-
-#     # Remaining kwargs to dist_fn
-#     reserved = {"name", "dist_fn", "weight", "cand_col", "ref_col"}
-#     kwargs = {k: v for k, v in item.items() if k not in reserved}
-
-#     return DistanceSpec(
-#         name=name,
-#         cand_col=cand_col,
-#         ref_col=ref_col,
-#         weight=weight,
-#         dist_fn=dist_fn,
-#         diagnostics=diags,
-#         kwargs=kwargs or None,
-#     )
 
 
 def get_gauge_dist_spec(scale_m: float, weight: float = 1.0):
@@ -365,7 +304,7 @@ def get_catchment_area_spec(dataset: str, reference_col: str, weight: float = 1.
 
 
 @dataclass(frozen=True)
-class DistanceReport:
+class _DistanceReport:
     used: List[str]                     # component names used
     skipped: List[Tuple[str, str]]      # (component name, reason)
     attribute_cols: List[str]
@@ -485,7 +424,7 @@ def compute_candidate_distances_from_plan(
     dist = np.where(ok, dist, np.nan)
     df["distance"] = dist
 
-    report = DistanceReport(
+    report = _DistanceReport(
         used=used,
         skipped=skipped,
         attribute_cols=attribute_cols,
