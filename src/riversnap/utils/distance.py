@@ -364,13 +364,15 @@ def get_catchment_area_spec(dataset: str, reference_col: str, weight: float = 1.
     })
 
 
-# TODO populate this class in compute_candidate_distances
 @dataclass(frozen=True)
 class DistanceReport:
     used: List[str]                     # component names used
     skipped: List[Tuple[str, str]]      # (component name, reason)
-    component_cols: List[str]           # d_<name> columns produced
+    # skipped: List[Tuple[str, str]]      # (component name, reason)
+    distance_component_cols: List[str]  # d_<name> columns produced
     weights: Dict[str, float]           # name -> weight
+    diagnostic_cols: List[str]
+    distance: List[str]
 
 
 def compute_candidate_distances_from_plan(
@@ -412,13 +414,18 @@ def compute_candidate_distances_from_plan(
         raise KeyError(f"Reference missing columns: {missing_ref}")
 
     # Compute component distances
-    component_dist_cols: List[str] = []
+    used: List[str] = [] 
+    skipped: List[str] = []
+    distance_component_cols: List[str] = []
     weights: Dict[str, float] = {}
+    diagnostic_cols: List[str] = []
+
     for s in specs:
         dcol = f"d_{s.name}"
         if s.cand_col not in df.columns:
             reason = f"missing candidate column '{s.cand_col}'"
             if drop_missing_components:
+                skipped.append(s.name)
                 continue
             raise KeyError(reason)
 
@@ -436,22 +443,27 @@ def compute_candidate_distances_from_plan(
             # Fallback if there are unsupported kwargs
             df[dcol] = dist_fn(cand_series, ref_series)  # type: ignore[misc]
 
-        component_dist_cols.append(dcol)
+        used.append(s.name)
+        # if s.ref_col:
+        #     distance_component_cols.append(s.ref_col)
+        distance_component_cols.append(dcol)
         weights[s.name] = float(s.weight)
 
         # Compute diagnostic columns 
         ctx = DiagnosticContext(name=s.name, cand=cand_series, ref=ref_series, d=df[dcol])
         for key in s.diagnostics:
             fn = DIAGNOSTICS[key]
-            df[f"{key}_{s.name}"] = fn(ctx)
+            diagcol = f"{key}_{s.name}"
+            df[diagcol] = fn(ctx)
+            diagnostic_cols.append(diagcol)
 
     # Aggregate distance
-    if not component_dist_cols:
+    if not distance_component_cols:
         df["distance"] = np.nan
         return df
 
-    D = df[component_dist_cols].to_numpy(dtype=float, copy=False)
-    W = np.asarray([weights[name.replace("d_", "")] for name in component_dist_cols], dtype=float)
+    D = df[distance_component_cols].to_numpy(dtype=float, copy=False)
+    W = np.asarray([weights[name.replace("d_", "")] for name in distance_component_cols], dtype=float)
     valid = ~np.isnan(D)
     ok = valid.any(axis=1) if require_any else valid.all(axis=1)
     weighted = np.where(valid, D * W, np.nan)
@@ -471,11 +483,12 @@ def compute_candidate_distances_from_plan(
     dist = np.where(ok, dist, np.nan)
     df["distance"] = dist
 
-    # report = DistanceReport(
-    #     used=used,
-    #     skipped=skipped,
-    #     component_cols=component_cols,
-    #     weights=weights,
-    # )
-    # return df, report
-    return df
+    report = DistanceReport(
+        used=used,
+        skipped=skipped,
+        distance_component_cols=distance_component_cols,
+        weights=weights,
+        diagnostic_cols=diagnostic_cols,
+        distance=['distance']
+    )
+    return df, report

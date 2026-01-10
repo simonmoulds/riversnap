@@ -177,21 +177,25 @@ class VectorHydrographyData(HydrographyData):
         # candidates = candidates[keep_cols]
 
         candidates['distance_m'] = candidates['distance_m'].clip(lower=distance_lower_threshold)
-        df = compute_candidate_distances_from_plan(
+        df, report = compute_candidate_distances_from_plan(
             candidates,
             specs=distance_specification, 
             aggregation_method=aggregation_method, 
             require_any=True, 
         )
 
+        # keep_cols = [self.global_id] + report.used + report.distance_component_cols + report.diagnostic_cols + ['distance']
+        keep_cols = [id_column, self.global_id] + report.distance_component_cols + report.diagnostic_cols + ['distance']
+        df = df[keep_cols] 
+
         # Select best row per ohdb_id
         df = df.sort_values([id_column, "distance"], ascending=[True, True])
         if return_all:
-            return df 
+            return df
 
         # Otherwise we select highest scoring in each case...
-        df = df.groupby("ohdb_id").head(1).reset_index(drop=True)
-        return df 
+        df = df.groupby(id_column).head(1).reset_index(drop=True)
+        return df
 
 
 # class RasterHydrographyData(HydrographyData):
