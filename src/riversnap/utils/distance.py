@@ -10,6 +10,16 @@ import pandas as pd
 
 EPS = 1e-12
 
+__all__ = [
+    "d_abs_diff",
+    "d_euclid_scaled_dist",
+    "d_log_ratio",
+    "d_sim_01",
+    "DistanceSpec",
+    "get_catchment_area_spec",
+    "get_gauge_dist_spec",
+]
+
 # Distance helpers
 def d_log_ratio(cand: pd.Series, ref: pd.Series) -> pd.Series:
     """Compute absolute log-ratio distance.
@@ -72,7 +82,7 @@ def d_abs_diff(cand: pd.Series, ref: pd.Series) -> pd.Series:
     return pd.Series(out, index=cand.index)
 
 
-def d_one_minus_similarity01(cand: pd.Series, ref: Optional[pd.Series] = None) -> pd.Series:
+def d_sim_01(cand: pd.Series, ref: Optional[pd.Series] = None) -> pd.Series:
     """Convert a [0, 1] similarity score into a distance.
 
     This distance is suitable for variables that are already expressed as 
@@ -98,7 +108,7 @@ def d_one_minus_similarity01(cand: pd.Series, ref: Optional[pd.Series] = None) -
     return pd.Series(out, index=cand.index)
 
 
-def d_spatial_scaled(cand_dist: pd.Series, ref: Optional[pd.Series] = None, *, scale_m: float) -> pd.Series:
+def d_euclid_scaled_dist(cand_dist: pd.Series, ref: Optional[pd.Series] = None, *, scale_m: float) -> pd.Series:
     """Compute spatial mismatch distance scaled by a reference distance.
 
     Parameters
@@ -193,58 +203,63 @@ class DistanceSpec:
 _DiagFn = Callable[[DiagnosticContext], pd.Series]
 
 
-def diag_m(ctx: DiagnosticContext) -> pd.Series:
+def _diag_m(ctx: DiagnosticContext) -> pd.Series:
     return ctx.cand.astype(float)
 
 
-def diag_pp(ctx: DiagnosticContext) -> pd.Series:
+def _diag_pp(ctx: DiagnosticContext) -> pd.Series:
     if ctx.ref is None:
         return pd.Series(np.nan, index=ctx.cand.index)
     return 100.0 * (ctx.cand.astype(float) - ctx.ref.astype(float)).abs()
 
 
-def diag_pct(ctx: DiagnosticContext) -> pd.Series:
+def _diag_pct(ctx: DiagnosticContext) -> pd.Series:
     # expects ctx.d from log-ratio
     if ctx.d is None:
         return pd.Series(np.nan, index=ctx.cand.index)
     return (np.exp(ctx.d.astype(float)) - 1.0) * 100.0
 
 
-def diag_factor(ctx: DiagnosticContext) -> pd.Series:
+def _diag_factor(ctx: DiagnosticContext) -> pd.Series:
     if ctx.d is None:
         return pd.Series(np.nan, index=ctx.cand.index)
     return np.exp(ctx.d.astype(float))
 
 
-def diag_err(ctx: DiagnosticContext) -> pd.Series:
+def _diag_err(ctx: DiagnosticContext) -> pd.Series:
     if ctx.ref is None:
         return pd.Series(np.nan, index=ctx.cand.index)
     return (ctx.cand.astype(float) - ctx.ref.astype(float)).abs()
 
 
+def _diag_sim(ctx: DiagnosticContext) -> pd.Series: 
+    return ctx.cand.astype(float)
+
+
 DIST_ARCHETYPES: Dict[str, Callable[..., pd.Series]] = {
-    "scale": d_log_ratio,
-    "abs": d_abs_diff,
-    "spatial": d_spatial_scaled,
-    "sim01": d_one_minus_similarity01,
+    "euclid_scaled_dist": d_euclid_scaled_dist,
+    "log_ratio": d_log_ratio,
+    "abs_diff": d_abs_diff,
+    "sim_01": d_sim_01,
 }
 
 
 # Default diagnostics per archetype
 DEFAULT_DIAGNOSTICS: Dict[str, Sequence[str]] = {
-    "spatial": ("m",),              # raw metres
-    "scale": ("pct", "factor"),     # interpret log-ratio in human terms
-    "abs": ("err",),                # native-unit error
-    "sim01": ("sim",),              # echo similarity score
+    "log_ratio": ("pct", "factor"),     # interpret log-ratio in human terms
+    "abs_diff": ("err",),                # native-unit error
+    "euclid_scaled_dist": ("m",),              # raw metres
+    "sim_01": ("sim",),              # echo similarity score
 }
 
 
 DIAGNOSTICS: dict[str, _DiagFn] = {
-    "m": diag_m,
-    "pp": diag_pp,
-    "pct": diag_pct,
-    "factor": diag_factor,
-    "err": diag_err,
+    "m": _diag_m,
+    "pp": _diag_pp,
+    "pct": _diag_pct,
+    "factor": _diag_factor,
+    "err": _diag_err,
+    "sim": _diag_sim, 
 }
 
 
@@ -267,7 +282,7 @@ def get_gauge_dist_spec(scale_m: float, weight: float = 1.0):
         'name': 'gauge_dist', 
         'ref_col': None, 
         'cand_col': 'distance_m', 
-        'dist_fn': "spatial", 
+        'dist_fn': "euclid_scaled_dist", 
         'weight': weight, 
         'scale_m': scale_m
     })
@@ -293,12 +308,11 @@ def get_catchment_area_spec(dataset: str, reference_col: str, weight: float = 1.
     if dataset.upper() == 'GRIT':
         cand_col = 'drainage_area_out'
 
-    # return make_distance_spec_from_dict({
     return DistanceSpec.from_dict({
         'name': 'drainage_area', 
         'ref_col': reference_col, 
         'cand_col': cand_col,
-        'dist_fn': "scale", 
+        'dist_fn': "log_ratio", 
         'weight': weight,
     })
 
@@ -314,7 +328,7 @@ class _DistanceReport:
     distance: List[str]
 
 
-def compute_candidate_distances_from_plan(
+def _compute_candidate_distances_from_plan(
     candidates: pd.DataFrame,
     *,
     specs: Sequence[DistanceSpec],
@@ -394,7 +408,7 @@ def compute_candidate_distances_from_plan(
         ctx = DiagnosticContext(name=s.name, cand=cand_series, ref=ref_series, d=df[dcol])
         for key in s.diagnostics:
             fn = DIAGNOSTICS[key]
-            diagcol = f"{key}_{s.name}"
+            diagcol = f"diag_{key}_{s.name}"
             df[diagcol] = fn(ctx)
             diagnostic_cols.append(diagcol)
 

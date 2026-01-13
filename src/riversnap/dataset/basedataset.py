@@ -4,7 +4,13 @@ import pandas as pd
 import geopandas as gpd 
 
 from pathlib import Path
-from riversnap.utils.distance import compute_candidate_distances_from_plan
+from riversnap.utils.distance import _compute_candidate_distances_from_plan
+
+__all__ = [
+    "HydrographyData",
+    "VectorHydrographyData",
+    "RasterHydrographyData"
+]
 
 EPS = 1e-12
 
@@ -159,9 +165,9 @@ class VectorHydrographyData(HydrographyData):
         distance_lower_threshold : float, optional
             Minimum distance used when clipping candidate distances.
         distance_plan : list, optional
-            Distance plan passed to ``compute_candidate_distances_from_plan``.
+            List of distance components used for snapping.
         aggregation_method : str, optional
-            Aggregation method for component distances.
+            Aggregation method for distance components.
         return_all : bool, optional
             If True, return all candidates with distances.
 
@@ -177,7 +183,7 @@ class VectorHydrographyData(HydrographyData):
         # candidates = candidates[keep_cols]
 
         candidates['distance_m'] = candidates['distance_m'].clip(lower=distance_lower_threshold)
-        df, report = compute_candidate_distances_from_plan(
+        df, report = _compute_candidate_distances_from_plan(
             candidates,
             specs=distance_specification, 
             aggregation_method=aggregation_method, 

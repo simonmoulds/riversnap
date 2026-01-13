@@ -10,5 +10,5 @@ The source code is available on `GitHub <https://githib.com/simonmoulds/riversna
 
    quickstart
    distance
-   usage
+   examples
    api

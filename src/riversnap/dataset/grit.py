@@ -4,6 +4,10 @@ import geopandas as gpd
 
 from riversnap.dataset.basedataset import VectorHydrographyData
 
+__all__ = [
+    "GRIT",
+]
+
 class GRIT(VectorHydrographyData):
     """GRIT vector hydrography dataset loader and candidate generator."""
 
