@@ -2,18 +2,29 @@
 import pandas as pd 
 import geopandas as gpd
 
+from sqlalchemy import create_engine, text, inspect
+
+from typing import Optional
+from pathlib import Path 
+
 from riversnap.dataset.basedataset import VectorHydrographyData
+
 
 __all__ = [
     "GRIT",
 ]
+
 
 class GRIT(VectorHydrographyData):
     """GRIT vector hydrography dataset loader and candidate generator."""
 
     VALID_CONTINENTS = ['AF', 'AS', 'EU', 'NA', 'SA', 'SI', 'SP']
 
-    def __init__(self, root, segments=False, continents=None):
+    def __init__(self, 
+                 root: Optional[Path] = None, 
+                 segments: Optional[bool] = False, 
+                 continents: Optional[list[str]] = None):
+
         """Initialize a GRIT dataset handle.
 
         Parameters
@@ -62,28 +73,10 @@ class GRIT(VectorHydrographyData):
         riv_reproj = riv.to_crs(epsg=target_crs)
         return riv_reproj
 
-    def get_candidates(self, 
-                       pts: gpd.GeoDataFrame, 
-                       id_column: str, 
-                       distance_threshold: float) -> pd.DataFrame:
-        """Generate candidate line features for each point.
-
-        Parameters
-        ----------
-        pts : geopandas.GeoDataFrame
-            Input point features.
-        id_column : str
-            Name of the unique identifier column in ``pts``.
-        distance_threshold : float
-            Maximum snapping distance in CRS units.
-
-        Returns
-        -------
-        pandas.DataFrame
-            Candidate line features with per-point distances.
-        """
-
-        # TODO implement this for when the lines are stored in a PostGIS database
+    def get_candidates_filesystem(self, 
+                                  pts: gpd.GeoDataFrame, 
+                                  id_column: str, 
+                                  distance_threshold: float) -> pd.DataFrame:
         candidates_list = []
         for continent in self.continents:
             riv = self.load_data(continent, target_crs=3857) # Why 3857?

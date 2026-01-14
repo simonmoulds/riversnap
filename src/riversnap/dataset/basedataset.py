@@ -3,8 +3,12 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd 
 
+from sqlalchemy import create_engine, text, inspect
 from pathlib import Path
+
+from riversnap.dataset.database import fetch_candidates_topk_geom
 from riversnap.utils.distance import _compute_candidate_distances_from_plan
+
 
 __all__ = [
     "HydrographyData",
@@ -12,7 +16,9 @@ __all__ = [
     "RasterHydrographyData"
 ]
 
+
 EPS = 1e-12
+
 
 class HydrographyData:
     """Base class for hydrography data sources."""
@@ -76,6 +82,111 @@ class VectorHydrographyData(HydrographyData):
             _hash_series(geom_wkb),
         )
         
+    def _get_candidates_filesystem_from_cache(self, pts, id_column, distance_threshold): 
+        cache_key = self._make_candidates_cache_key(
+            pts=pts,
+            id_column=id_column,
+            distance_threshold=distance_threshold,
+        )
+        if self._candidates_cache_key == cache_key:
+            candidates = self._candidates_cache
+        else:
+            candidates = self.get_candidates_filesystem(pts, id_column, distance_threshold=distance_threshold)
+            self._candidates_cache_key = cache_key
+            self._candidates_cache = candidates
+        return candidates
+
+    def get_candidates_postgis(self, 
+                               engine,
+                               *,
+                               pts: str, 
+                               id_column: str, 
+                               distance_threshold: float): 
+
+        # Check if `pts` table exists 
+        with engine.begin() as con:
+            exists = con.execute(
+                text("SELECT to_regclass(:name) IS NOT NULL"), {"name": pts}).scalar()
+
+        if not exists: 
+            raise ValueError(f"Table {pts} does not exist in the provided PostGIS database")
+
+        # Add index to speed things up
+        with engine.begin() as con:
+            con.execute(text(f"CREATE INDEX IF NOT EXISTS {self.postgis_table}_geom_gix ON {self.postgis_table} USING GIST (geometry);"))
+            con.execute(text(f"CREATE INDEX IF NOT EXISTS {pts}_geom_gix ON {pts} USING GIST (geometry);"))
+
+        candidates = fetch_candidates_topk_geom(
+            engine,
+            points_table=pts,
+            lines_table=self.postgis_table,
+            gauge_id_col=id_column,
+            reach_id_col=self.global_id,
+            geom_col_points='geometry',
+            geom_col_lines='geometry',
+            threshold_m=distance_threshold,
+            k=None
+        )
+        # candidates = candidates.sort_values(by=[id_column, 'distance_m'])
+        return candidates
+
+    def get_candidates(self, 
+                       engine=None, 
+                       *, 
+                       pts: gpd.GeoDataFrame | str, 
+                       id_column: str, 
+                       distance_threshold: int):
+        """Generate candidate line features for each point.
+
+        Parameters
+        ----------
+        engine : sqlalchemy.engine.Engine
+            SQLAlchemy engine connected to a PostgreSQL database with the PostGIS
+            extension enabled. The engine is used to execute SQL queries and write
+            GeoDataFrames to PostGIS (e.g. via :meth:`geopandas.GeoDataFrame.to_postgis`).
+        pts : geopandas.GeoDataFrame or str
+            Either a GeoDataFrame with points, or the name of the table in the database 
+            to which ``engine`` is connected. 
+        id_column : str
+            Name of the unique identifier column in ``pts``.
+        distance_threshold : float
+            Maximum snapping distance in CRS units.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Candidate line features with per-point distances.
+        """
+        if self.backend == "filesystem": 
+            candidates = self._get_candidates_filesystem_from_cache(pts, id_column, distance_threshold)
+        elif self.backend == "postgis": 
+            candidates = self.get_candidates_postgis(engine, pts=pts, id_column=id_column, distance_threshold=distance_threshold)
+        return candidates 
+
+    def init_postgis(self, 
+                     engine, 
+                     *, 
+                     table: str, 
+                     srid: int = 3857, 
+                     if_exists: str = "fail"):
+
+        # Read gpkg tiles (streaming file-by-file), write to PostGIS (append)
+        # Ensure GiST index
+        # Save config on self: backend="postgis", postgis_table=table, srid=srid
+        with engine.connect() as con:
+            exists = con.execute(text("SELECT to_regclass(:tname) IS NOT NULL"), {"tname": table}).scalar()
+
+        if not (exists and if_exists == "fail"):
+
+            for continent in self.continents:
+                ds = self.load_data(continent, target_crs=srid)
+                # ds['asset_key'] = continent
+                ds.to_postgis(name=table, con=engine, if_exists=if_exists)
+
+        self.backend = "postgis"
+        self.postgis_table = table 
+        self.srid = srid 
+
     def snap_points_to_lines(self, pts, lns, id_column, distance_threshold=1500): 
         """
         Snap points [e.g. gauging stations] to lines [e.g. river reaches]
@@ -129,20 +240,6 @@ class VectorHydrographyData(HydrographyData):
             return pd.concat(candidates_list)
         else:
             return None
-
-    def _get_candidates_from_cache(self, pts, id_column, distance_threshold): 
-        cache_key = self._make_candidates_cache_key(
-            pts=pts,
-            id_column=id_column,
-            distance_threshold=distance_threshold,
-        )
-        if self._candidates_cache_key == cache_key:
-            candidates = self._candidates_cache
-        else:
-            candidates = self.get_candidates(pts, id_column, distance_threshold=distance_threshold)
-            self._candidates_cache_key = cache_key
-            self._candidates_cache = candidates
-        return candidates
 
     def snap(self, 
              pts, 
