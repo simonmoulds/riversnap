@@ -1,0 +1,12 @@
+services:
+  postgis:
+    image: postgis/postgis:16-3.4
+    restart: always 
+    environment: 
+      POSTGRES_USER: postgres 
+      POSTGRES_PASSWORD: postgres 
+      POSTGRES_DB: riversnap
+    ports:
+      - 5432:5432
+    volumes:
+      - ./postgis_data:/var/lib/postgresql/data

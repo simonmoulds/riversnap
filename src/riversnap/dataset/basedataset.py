@@ -2,11 +2,12 @@
 import numpy as np
 import pandas as pd
 import geopandas as gpd 
+import pyogrio 
 
 from sqlalchemy import create_engine, text, inspect
 from pathlib import Path
+from typing import List, Optional
 
-from riversnap.dataset.database import fetch_candidates_topk_geom
 from riversnap.utils.distance import _compute_candidate_distances_from_plan
 
 
@@ -20,232 +21,332 @@ __all__ = [
 EPS = 1e-12
 
 
+def write_points_to_postgis(pts, engine, table, if_exists='replace'): 
+    pts.to_postgis(name=table, con=engine, if_exists=if_exists)
+    return None 
+
+
+def parse_columns(lines_columns, points_columns, lines_id_col, points_id_col, lines_geom_col, points_geom_col, duplicate_prefix="pt_"):
+    """Parse and validate column names for candidate fetching."""
+
+    if points_id_col == lines_id_col: 
+        raise ValueError("points and lines must have different global ID columns names.")
+
+    if points_id_col not in points_columns:
+        raise ValueError(f"points_id_col '{points_id_col}' not found in points table columns.")
+
+    if lines_id_col not in lines_columns:
+        raise ValueError(f"lines_id_col '{lines_id_col}' not found in lines table columns.")
+
+    columns = lines_columns + points_columns
+    dupl_columns = [col for col in points_columns if col in lines_columns]
+    rename_columns = {}
+    if len(dupl_columns) > 0: 
+        rename_columns = {col: f"{duplicate_prefix}_{col}" for col in dupl_columns if col != points_id_col}
+
+    first_two_cols = [points_id_col, lines_id_col]
+    ignore_cols = first_two_cols + [lines_geom_col, points_geom_col]
+    include_columns = first_two_cols + [col for col in columns if col not in ignore_cols]
+    return include_columns, rename_columns
+
+
+# class PointData: # E.g. river gauges
+#     def __init__(self): 
+#         pass 
+
+def get_candidates_geopackage(points, lines, points_id_col, threshold_m):        
+    # Buffer points by distance
+    buffered_points = points.copy()
+    buffered_points["geometry"] = buffered_points.geometry.buffer(threshold_m)
+
+    # Use spatial index + spatial join (efficient)
+    # This returns all lines that intersect the buffer of any point
+    candidates = gpd.sjoin(lines, buffered_points, how="inner", predicate="intersects")
+    candidates = candidates.sort_values(points_id_col).reset_index(drop=True)
+
+    # Add distances 
+    ids = candidates[points_id_col].unique() 
+    candidates_list = []
+    for id in ids: 
+        pt = points[points[points_id_col] == id]['geometry'].iloc[0]
+        pt_candidates = candidates[candidates[points_id_col] == id].copy()
+        pt_candidates['distance_m'] = pt_candidates.geometry.distance(pt)
+        candidates_list.append(pt_candidates)
+
+    if len(candidates_list) == 0: 
+        return None
+
+    return pd.concat(candidates_list) #[include_columns + ['distance_m']])
+
+
+def get_candidates_postgis(engine=None,
+                           *,
+                           points: str,
+                           lines: str,
+                           points_geom_col: str = "geometry",
+                           lines_geom_col: str = "geometry",
+                           threshold_m: float = 5000.0,
+                           k: int | None = 25):
+
+    limit_sql = "" if k is None else "LIMIT :k"
+    sql = f"""
+    SELECT
+    g.*,
+    r.*,
+    ST_Distance(r.{lines_geom_col}, g.{points_geom_col}) AS distance_m
+    FROM {points} AS g
+    JOIN LATERAL (
+    SELECT *
+    FROM {lines}
+    WHERE ST_DWithin({lines_geom_col}, g.{points_geom_col}, :threshold_m)
+    ORDER BY {lines_geom_col} <-> g.{points_geom_col}
+    {limit_sql}
+    ) AS r ON TRUE
+    """
+    # ORDER BY g.{points_id_col}, distance_m;
+    params = {"threshold_m": float(threshold_m)}
+    if k is not None:
+        params["k"] = int(k)
+
+    candidates = pd.read_sql(text(sql), engine, params=params)
+    return candidates 
+
+class _HydrographyBackend:
+    def check_file_existence(self, files: List[Path] | None = None) -> bool: 
+        if files is None: 
+            return
+
+        files = [Path(f) for f in files] 
+        for f in files: 
+            nonexistant_files = []
+            if not f.exists():
+                nonexistant_files.append(f)
+
+        if len(nonexistant_files) == 1:
+            raise ValueError(f"File {str(nonexistant_files[0])} does not exist!")
+        if len(nonexistant_files) > 1:
+            fs_string = ", ".join([str(f) for f in nonexistant_files])
+            raise ValueError(f"Files {fs_string} do not exist!")
+
+    def load_data(self, file: Path, target_crs: int) -> gpd.GeoDataFrame:
+        """Load and reproject GRIT data for a single continent.
+
+        Parameters
+        ----------
+        file : Path
+            File path.
+        target_crs : int
+            EPSG code to project the data to.
+
+        Returns
+        -------
+        geopandas.GeoDataFrame
+            Reprojected GRIT line features.
+        """
+        if not file.exists():
+            raise ValueError(f'File {file} does not exist!')
+
+        riv = gpd.read_file(file, layer='lines')
+        riv_reproj = riv.to_crs(epsg=target_crs)
+        return riv_reproj
+
+
+class _FilesystemBackend(_HydrographyBackend):
+    
+    def prepare_data_backend(self,
+                             files=None, 
+                             target_crs: int = 3857, 
+                             engine=None, 
+                             table: str = None, 
+                             if_exists: str = "fail"): 
+
+        self.check_file_existence(files) 
+        self.lines = files
+        self.srid = target_crs
+        self._candidates_cache = None
+        self._candidates_cache_key = None
+
+    def make_candidates_cache_key(self, points, points_id_column, threshold_m): 
+        def _hash_series(series: pd.Series) -> int:
+            return int(pd.util.hash_pandas_object(series, index=False).sum())
+
+        geom_wkb = points.geometry.apply(lambda geom: geom.wkb)
+        return (
+            threshold_m,
+            str(points.crs),
+            len(points),
+            _hash_series(points[points_id_column]),
+            _hash_series(geom_wkb),
+        )
+
+    def get_column_names(self, engine=None, *, gdf_or_table): 
+        if isinstance(gdf_or_table, list):
+            cols = list(pyogrio.read_info(gdf_or_table[0])['fields'])
+        elif isinstance(gdf_or_table, gpd.GeoDataFrame):
+            cols = list(gdf_or_table.columns) 
+        return cols
+
+    def get_candidates_backend(self,
+                               engine=None,
+                               *,
+                               points: str | gpd.GeoDataFrame, 
+                               points_id_col: str,
+                               points_geom_col: str = "geometry",
+                               lines_geom_col: str = "geometry",
+                               threshold_m: float = 5000.0,
+                               k: int | None = 25):
+
+        candidates_list = []
+        for filename in self.lines: 
+            lns = self.load_data(filename, target_crs=3857) # Why 3857?
+            candidates = get_candidates_geopackage(points, lns, points_id_col, threshold_m)
+            if candidates is not None:
+                candidates_list.append(candidates)
+
+        candidates = pd.concat(candidates_list)
+        candidates = candidates.sort_values(by=[points_id_col, 'distance_m'])
+        return candidates
+
+
+class _PostGISBackend(_HydrographyBackend):
+
+    def prepare_data_backend(self,
+                             files=None, 
+                             target_crs: int = 3857, 
+                             engine: "sqlalchemy.engine.Engine" | None = None, 
+                             table: str = None, 
+                             if_exists: str = "fail"): 
+
+        self.check_file_existence(files) 
+
+        # Check existence of table
+        with engine.connect() as con:
+            exists = con.execute(text("SELECT to_regclass(:tname) IS NOT NULL"), {"tname": table}).scalar()
+
+        if files is None and not exists: 
+            raise ValueError("No files provided to initialize PostGIS table, and table does not already exist.")
+
+        if not (exists and if_exists == "fail"):
+            for f in files:
+                ds = self.load_data(f, target_crs=target_crs)
+                # ds['asset_key'] = continent
+                ds.to_postgis(name=table, con=engine, if_exists=if_exists)
+
+        self.lines = table
+        self.srid = target_crs
+
+    def make_candidates_cache_key(self, points, points_id_column, threshold_m): 
+        return (points, points_id_column, threshold_m) 
+
+    def get_column_names(self, engine, gdf_or_table): 
+        sql = f"""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = :table_name;
+        """
+        df = pd.read_sql(text(sql), engine, params={"table_name": gdf_or_table})
+        return df['column_name'].tolist()
+
+    def get_candidates_backend(self,
+                               engine=None,
+                               *,
+                               points: str | gpd.GeoDataFrame, 
+                               points_id_col: str,
+                               points_geom_col: str = "geometry",
+                               lines_geom_col: str = "geometry",
+                               threshold_m: float = 5000.0,
+                               k: int | None = 25):
+
+        # Check if `points` table exists 
+        with engine.begin() as con:
+            exists = con.execute(
+                text("SELECT to_regclass(:name) IS NOT NULL"), {"name": points}).scalar()
+
+        if not exists: 
+            raise ValueError(f"Table {points} does not exist in the provided PostGIS database")
+
+        # Add index to speed things up
+        with engine.begin() as con:
+            con.execute(text(f"CREATE INDEX IF NOT EXISTS {self.lines}_geom_gix ON {self.lines} USING GIST (geometry);"))
+            con.execute(text(f"CREATE INDEX IF NOT EXISTS {points}_geom_gix ON {points} USING GIST (geometry);"))
+
+        candidates = get_candidates_postgis(
+            engine=engine, points=points, lines=self.lines, points_geom_col=points_geom_col, 
+            lines_geom_col=lines_geom_col, threshold_m=threshold_m, k=k
+        )
+        return candidates
+
+
 class HydrographyData:
-    """Base class for hydrography data sources."""
-    def __init__(self, root):
+    """Base class for hydrography datasets."""
+    def __init__(self, 
+                 backend: str = "filesystem"): 
+
         """Initialize a hydrography data source.
 
         Parameters
         ----------
-        root : str or pathlib.Path
-            Root directory containing hydrography data files.
+        backend : str
+            The backend to use. Either "filesystem" or "postgis".
         """
-        self.root = Path(root)
-        self.data = None
-        self._candidates_cache = None
-        self._candidates_cache_key = None
+        self.backend = backend
+        if backend == "filesystem":
+            self._backend = _FilesystemBackend() #files=..., srid=srid)
+        elif backend == "postgis":
+            self._backend = _PostGISBackend() #table=postgis_table, srid=srid)
+        else:
+            raise ValueError(...)
 
-    def get_candidates(self): 
-        """Return candidate line features for the given points.
-
-        Returns
-        -------
-        pandas.DataFrame
-            Candidate features for each point.
-        """
-        raise NotImplementedError
-
-    def load_data(self):
-        """Load source data from disk or a remote store.
-
-        Returns
-        -------
-        object
-            Loaded dataset object.
-        """
-        raise NotImplementedError
-
+        self._candidates_cache_key = None 
+        self._candidates_cache = None 
 
 class VectorHydrographyData(HydrographyData):
-    """Base class for vector-based hydrography datasets."""
-    def _get_crs(self):
-        if self.data is not None:
-            return self.data.crs
-        else:
-            raise ValueError("Data not loaded. Please call load_data() first.")
 
-    def _make_candidates_cache_key(
-        self,
-        pts: gpd.GeoDataFrame,
-        id_column: str,
-        distance_threshold: float,
-    ) -> tuple:
-        def _hash_series(series: pd.Series) -> int:
-            return int(pd.util.hash_pandas_object(series, index=False).sum())
-
-        geom_wkb = pts.geometry.apply(lambda geom: geom.wkb)
-        return (
-            distance_threshold,
-            str(pts.crs),
-            len(pts),
-            _hash_series(pts[id_column]),
-            _hash_series(geom_wkb),
-        )
-        
-    def _get_candidates_filesystem_from_cache(self, pts, id_column, distance_threshold): 
-        cache_key = self._make_candidates_cache_key(
-            pts=pts,
-            id_column=id_column,
-            distance_threshold=distance_threshold,
-        )
-        if self._candidates_cache_key == cache_key:
-            candidates = self._candidates_cache
-        else:
-            candidates = self.get_candidates_filesystem(pts, id_column, distance_threshold=distance_threshold)
-            self._candidates_cache_key = cache_key
-            self._candidates_cache = candidates
-        return candidates
-
-    def get_candidates_postgis(self, 
-                               engine,
-                               *,
-                               pts: str, 
-                               id_column: str, 
-                               distance_threshold: float): 
-
-        # Check if `pts` table exists 
-        with engine.begin() as con:
-            exists = con.execute(
-                text("SELECT to_regclass(:name) IS NOT NULL"), {"name": pts}).scalar()
-
-        if not exists: 
-            raise ValueError(f"Table {pts} does not exist in the provided PostGIS database")
-
-        # Add index to speed things up
-        with engine.begin() as con:
-            con.execute(text(f"CREATE INDEX IF NOT EXISTS {self.postgis_table}_geom_gix ON {self.postgis_table} USING GIST (geometry);"))
-            con.execute(text(f"CREATE INDEX IF NOT EXISTS {pts}_geom_gix ON {pts} USING GIST (geometry);"))
-
-        candidates = fetch_candidates_topk_geom(
-            engine,
-            points_table=pts,
-            lines_table=self.postgis_table,
-            gauge_id_col=id_column,
-            reach_id_col=self.global_id,
-            geom_col_points='geometry',
-            geom_col_lines='geometry',
-            threshold_m=distance_threshold,
-            k=None
-        )
-        # candidates = candidates.sort_values(by=[id_column, 'distance_m'])
-        return candidates
+    def prepare_data(self, **kwargs):
+        self._backend.prepare_data_backend(**kwargs)
 
     def get_candidates(self, 
-                       engine=None, 
-                       *, 
-                       pts: gpd.GeoDataFrame | str, 
-                       id_column: str, 
-                       distance_threshold: int):
-        """Generate candidate line features for each point.
+                       engine=None,
+                       *,
+                       points: str | gpd.GeoDataFrame, 
+                       points_id_col: str,
+                       points_geom_col: str = "geometry",
+                       lines_geom_col: str = "geometry",
+                       threshold_m: float = 5000.0,
+                       k: int | None = 25, 
+                       use_cache: bool = True):
 
-        Parameters
-        ----------
-        engine : sqlalchemy.engine.Engine
-            SQLAlchemy engine connected to a PostgreSQL database with the PostGIS
-            extension enabled. The engine is used to execute SQL queries and write
-            GeoDataFrames to PostGIS (e.g. via :meth:`geopandas.GeoDataFrame.to_postgis`).
-        pts : geopandas.GeoDataFrame or str
-            Either a GeoDataFrame with points, or the name of the table in the database 
-            to which ``engine`` is connected. 
-        id_column : str
-            Name of the unique identifier column in ``pts``.
-        distance_threshold : float
-            Maximum snapping distance in CRS units.
+        cache_key = None
+        if use_cache: 
+            cache_key = self._backend.make_candidates_cache_key(points=points, points_id_column=points_id_col, threshold_m=threshold_m)
+            # If cache key matches, we just return the cached candidates 
+            if self._candidates_cache_key == cache_key:
+                return self._candidates_cache
 
-        Returns
-        -------
-        pandas.DataFrame
-            Candidate line features with per-point distances.
-        """
-        if self.backend == "filesystem": 
-            candidates = self._get_candidates_filesystem_from_cache(pts, id_column, distance_threshold)
-        elif self.backend == "postgis": 
-            candidates = self.get_candidates_postgis(engine, pts=pts, id_column=id_column, distance_threshold=distance_threshold)
+        # Otherwise compute cnandidates afresh
+        lines_columns = self._backend.get_column_names(engine, gdf_or_table=self._backend.lines)
+        points_columns = self._backend.get_column_names(engine, gdf_or_table=points)
+        include_columns, rename_columns = parse_columns(lines_columns, points_columns, self.global_id, points_id_col, lines_geom_col, points_geom_col)
+        candidates = self._backend.get_candidates_backend(
+            engine=engine, points=points, points_id_col=points_id_col, 
+            points_geom_col=points_geom_col, lines_geom_col=lines_geom_col, threshold_m=threshold_m, k=k
+        )
+        candidates = candidates[include_columns + ['distance_m']] 
+        candidates = candidates.rename(columns=rename_columns)
+
+        # Upload candidates to cache
+        self._candidates_cache_key = cache_key
+        self._candidates_cache = candidates
+
         return candidates 
 
-    def init_postgis(self, 
-                     engine, 
-                     *, 
-                     table: str, 
-                     srid: int = 3857, 
-                     if_exists: str = "fail"):
-
-        # Read gpkg tiles (streaming file-by-file), write to PostGIS (append)
-        # Ensure GiST index
-        # Save config on self: backend="postgis", postgis_table=table, srid=srid
-        with engine.connect() as con:
-            exists = con.execute(text("SELECT to_regclass(:tname) IS NOT NULL"), {"tname": table}).scalar()
-
-        if not (exists and if_exists == "fail"):
-
-            for continent in self.continents:
-                ds = self.load_data(continent, target_crs=srid)
-                # ds['asset_key'] = continent
-                ds.to_postgis(name=table, con=engine, if_exists=if_exists)
-
-        self.backend = "postgis"
-        self.postgis_table = table 
-        self.srid = srid 
-
-    def snap_points_to_lines(self, pts, lns, id_column, distance_threshold=1500): 
-        """
-        Snap points [e.g. gauging stations] to lines [e.g. river reaches]
-        within a given distance threshold.
-
-        Parameters
-        ----------
-        pts : GeoDataFrame
-            Input points to be snapped.
-        lns : GeoDataFrame
-            Input lines to snap points to.
-        id_column : str
-            Name of the column in `pts` that contains unique point IDs.
-        distance_threshold : float, optional
-            Maximum snapping distance in the units of the coordinate
-            reference system (CRS). Lines farther than this distance from
-            any given point will be discarded. Default is 1500.
-
-        Returns
-        -------
-        candidates : GeoDataFrame
-            A list of candidate lines for each point.
-
-        Notes
-        -----
-        - If `pts` or `lns` are GeoDataFrames, both must be in the same CRS.
-        - The snapping is performed geometrically, not topologically.
-        """
-        if id_column not in pts.columns:
-            raise ValueError(f'ID column "{id_column}" not found in points GeoDataFrame.')
-
-        # Step 1: Buffer points by distance
-        buffered_points = pts.copy()
-        buffered_points["geometry"] = buffered_points.geometry.buffer(distance_threshold)
-
-        # Step 2: Use spatial index + spatial join (efficient)
-        # This returns all lines that intersect the buffer of any point
-        candidates = gpd.sjoin(lns, buffered_points, how="inner", predicate="intersects")
-        candidates = candidates.sort_values(id_column).reset_index(drop=True)
-
-        # Step 3: Add distances 
-        ids = candidates[id_column].unique() 
-        candidates_list = []
-        for id in ids: 
-            pt = pts[pts[id_column] == id]['geometry'].iloc[0]
-            pt_candidates = candidates[candidates[id_column] == id].copy()
-            pt_candidates['distance_m'] = pt_candidates.geometry.distance(pt)
-            candidates_list.append(pt_candidates)
-
-        if len(candidates_list) > 0: 
-            return pd.concat(candidates_list)
-        else:
-            return None
-
     def snap(self, 
-             pts, 
-             id_column, 
-             distance_threshold, 
-             distance_lower_threshold: float = 100., 
+             engine=None,
+             *,
+             points, 
+             points_id_col, 
+             threshold_m, 
+             threshold_m_lower: float = 100., 
              distance_specification: list = None,
              aggregation_method: str = "weighted_mean",
              return_all=False): 
@@ -253,15 +354,15 @@ class VectorHydrographyData(HydrographyData):
 
         Parameters
         ----------
-        pts : geopandas.GeoDataFrame
+        points : geopandas.GeoDataFrame
             Point features to snap.
-        id_column : str
+        points_id_column : str
             Name of the unique identifier column in ``pts``.
-        distance_threshold : float
+        threshold_m : float
             Maximum search radius in CRS units.
-        distance_lower_threshold : float, optional
+        threshold_m_lower : float, optional
             Minimum distance used when clipping candidate distances.
-        distance_plan : list, optional
+        distance_specification : list, optional
             List of distance components used for snapping.
         aggregation_method : str, optional
             Aggregation method for distance components.
@@ -274,12 +375,18 @@ class VectorHydrographyData(HydrographyData):
             Snapped candidates with computed distances.
         """
 
-        candidates = self._get_candidates_from_cache(pts, id_column, distance_threshold)
-
-        # keep_cols = [self.global_id, id_column, 'distance_m']
-        # candidates = candidates[keep_cols]
-
-        candidates['distance_m'] = candidates['distance_m'].clip(lower=distance_lower_threshold)
+        candidates = self.get_candidates(
+            engine=engine, 
+            points=points, 
+            points_id_col=points_id_col, 
+            points_geom_col="geometry",
+            lines_geom_col="geometry",
+            threshold_m=threshold_m,
+            k=None, 
+            use_cache=False
+        )
+        
+        candidates['distance_m'] = candidates['distance_m'].clip(lower=threshold_m_lower)
         df, report = _compute_candidate_distances_from_plan(
             candidates,
             specs=distance_specification, 
@@ -287,7 +394,7 @@ class VectorHydrographyData(HydrographyData):
             require_any=True, 
         )
         keep_cols = (
-            [id_column, self.global_id] 
+            [points_id_col, self.global_id] 
             + report.attribute_cols 
             + report.distance_component_cols 
             + report.diagnostic_cols
@@ -296,132 +403,10 @@ class VectorHydrographyData(HydrographyData):
         df = df[keep_cols] 
 
         # Select best row per ohdb_id
-        df = df.sort_values([id_column, "distance"], ascending=[True, True])
+        df = df.sort_values([points_id_col, "distance"], ascending=[True, True])
         if return_all:
             return df
 
         # Otherwise we select highest scoring in each case...
-        df = df.groupby(id_column).head(1).reset_index(drop=True)
+        df = df.groupby(points_id_col).head(1).reset_index(drop=True)
         return df
-
-
-# class RasterHydrographyData(HydrographyData):
-#     def get_bounds(self):
-#         if self.data is not None:
-#             return self.data.total_bounds
-#         else:
-#             raise ValueError("Data not loaded. Please call load_data() first.")
-        
-#     def snap_points_to_accumulation_raster(self, 
-#                                            pts, 
-#                                            raster_path, 
-#                                            accumulated_area_scale_factor=1.,
-#                                            global_accumulated_area_threshold=None,
-#                                            catchment_accumulated_area_error=None, 
-#                                            catchment_area_column=None,
-#                                            distance_threshold=1500,
-#                                            n_candidates=None):
-#         """
-#         Snap points (e.g., gauges) to the pixel of maximum accumulated area
-#         within a given search radius.
-
-#         Parameters
-#         ----------
-#         pts : GeoDataFrame
-#             Input point locations. Must have the same CRS as the raster.
-#         raster_path : str
-#             Path to a flow accumulation raster (e.g., upstream area).
-#         accumulated_area_scale_factor: float 
-#             Scale factor to apply to accumulated area map 
-#         global_accumulated_area_threshold: float 
-#             Threshold below which accumulated area values are masked. 
-
-#         catchment_accumulated_area_threhsold: float 
-#         catchment_area_column: str
-#         distance_threshold : float
-#             Search radius for snapping, in CRS units (typically metres).
-#         n_candidates: int or None
-#             Number of candidate pixels to return per point.
-#             If None, return all valid candidates.
-
-#         Returns
-#         -------
-#         snapped : GeoDataFrame
-#             A GeoDataFrame containing the new snapped point location, 
-#             original point id, raster value, and distance to snapped location.
-#         """
-
-#         results = []
-#         with rasterio.open(raster_path) as src:
-#             for _, row in tqdm(pts.iterrows(), total=len(pts)):
-#                 pt = row.geometry
-#                 pid = row.get("gauge_id", _)
-
-#                 # Bounding box around point
-#                 minx, maxx = pt.x - distance_threshold, pt.x + distance_threshold
-#                 miny, maxy = pt.y - distance_threshold, pt.y + distance_threshold
-
-#                 # Raster window
-#                 window = from_bounds(minx, miny, maxx, maxy, src.transform)
-#                 arr = src.read(1, window=window, masked=True)
-#                 arr = arr * accumulated_area_scale_factor # Multiply by scale factor
-
-#                 if arr.mask.all():
-#                     continue
-
-#                 # Apply circular mask
-#                 height, width = arr.shape
-#                 xs = np.arange(width) * src.transform.a + minx + src.transform.a/2
-#                 ys = np.arange(height) * src.transform.e + maxy + src.transform.e/2
-#                 X, Y = np.meshgrid(xs, ys)
-#                 dist2 = np.sqrt((X - pt.x)**2 + (Y - pt.y)**2)
-
-#                 if catchment_accumulated_area_error is not None: 
-#                     if catchment_area_column is None or catchment_area_column not in row: 
-#                         raise ValueError()
-#                     area = float(row[catchment_area_column])
-#                     area_err = 100 * (np.abs(arr.data - area) / np.clip(np.abs(area), EPS, None))
-#                     area_mask = area_err < catchment_accumulated_area_error
-
-#                 elif global_accumulated_area_threshold is not None: 
-#                     area_mask = (arr.data >= global_accumulated_area_threshold)
-#                 else:
-#                     area_mask = (arr.data >= arr.min())
-
-#                 valid_mask = (~arr.mask) & (dist2 <= distance_threshold) & area_mask
-
-#                 if not valid_mask.any():
-#                     continue
-
-#                 # Get indices and values of valid pixels
-#                 valid_indices = np.array(np.where(valid_mask)).T  # (row, col)
-#                 valid_values = dist2[valid_mask]
-
-#                 # Sort by accumulated area descending
-#                 sorted_idx = np.argsort(valid_values)
-
-#                 if n_candidates is not None:
-#                     top_idx = sorted_idx[:n_candidates]
-#                 else:
-#                     top_idx = sorted_idx
-
-#                 pt_results = []
-#                 for i in top_idx:
-#                     r, c = valid_indices[i]
-#                     x_snap, y_snap = X[r, c], Y[r, c]
-#                     snap_pt = Point(x_snap, y_snap)
-#                     pt_results.append({
-#                         "gauge_id": pid,
-#                         "geometry": snap_pt,
-#                         "accum_area": arr.data[r, c],
-#                         "distance_m": pt.distance(snap_pt)
-#                     })
-
-#                 pt_results = pd.DataFrame(pt_results)
-#                 results.append(pt_results)
-
-#         return gpd.GeoDataFrame(
-#             pd.concat(results),
-#             geometry='geometry',
-#             crs=pts.crs
-#         )
