@@ -111,6 +111,7 @@ def get_candidates_postgis(engine=None,
     candidates = pd.read_sql(text(sql), engine, params=params)
     return candidates 
 
+
 class _HydrographyBackend:
     def check_file_existence(self, files: List[Path] | None = None) -> bool: 
         if files is None: 
@@ -206,7 +207,6 @@ class _FilesystemBackend(_HydrographyBackend):
         candidates = pd.concat(candidates_list)
         candidates = candidates.sort_values(by=[points_id_col, 'distance_m'])
         return candidates
-
 
 class _PostGISBackend(_HydrographyBackend):
 
@@ -354,6 +354,8 @@ class VectorHydrographyData(HydrographyData):
 
         Parameters
         ----------
+        engine: sqlalchemy.engine.Engine
+            Database engine (for PostGIS backend).
         points : geopandas.GeoDataFrame
             Point features to snap.
         points_id_column : str
