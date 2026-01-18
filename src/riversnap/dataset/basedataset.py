@@ -113,6 +113,9 @@ def get_candidates_postgis(engine=None,
 
 
 class _HydrographyBackend:
+    def __init__(self): 
+        pass
+
     def check_file_existence(self, files: List[Path] | None = None) -> bool: 
         if files is None: 
             return
@@ -129,28 +132,34 @@ class _HydrographyBackend:
             fs_string = ", ".join([str(f) for f in nonexistant_files])
             raise ValueError(f"Files {fs_string} do not exist!")
 
-    def load_data(self, file: Path, target_crs: int) -> gpd.GeoDataFrame:
-        """Load and reproject GRIT data for a single continent.
+    def load_data(self, file: Path, target_crs: int, **kwargs) -> gpd.GeoDataFrame:
+        """Load and reproject GRIT data for a single continent. This 
+        function uses GeoPandas.read_file(...) behind the scenes.
 
         Parameters
         ----------
         file : Path
             File path.
         target_crs : int
-            EPSG code to project the data to.
+            EPSG code to project the data to. 
+        **kwargs : dict
+            Additional keyword arguments passed to geopandas.read_file(...).
 
         Returns
         -------
         geopandas.GeoDataFrame
-            Reprojected GRIT line features.
+            Reprojected dataset.
         """
         if not file.exists():
             raise ValueError(f'File {file} does not exist!')
 
-        riv = gpd.read_file(file, layer='lines')
+        riv = gpd.read_file(file, **kwargs)
         riv_reproj = riv.to_crs(epsg=target_crs)
         return riv_reproj
 
+    def prepare_data_backend(self):
+
+        raise NotImplementedError()
 
 class _FilesystemBackend(_HydrographyBackend):
     
@@ -181,11 +190,7 @@ class _FilesystemBackend(_HydrographyBackend):
         )
 
     def get_column_names(self, engine=None, *, gdf_or_table): 
-        if isinstance(gdf_or_table, list):
-            cols = list(pyogrio.read_info(gdf_or_table[0])['fields'])
-        elif isinstance(gdf_or_table, gpd.GeoDataFrame):
-            cols = list(gdf_or_table.columns) 
-        return cols
+        return list(gdf_or_table.columns) 
 
     def get_candidates_backend(self,
                                engine=None,
@@ -323,16 +328,16 @@ class VectorHydrographyData(HydrographyData):
             if self._candidates_cache_key == cache_key:
                 return self._candidates_cache
 
-        # Otherwise compute cnandidates afresh
-        lines_columns = self._backend.get_column_names(engine, gdf_or_table=self._backend.lines)
-        points_columns = self._backend.get_column_names(engine, gdf_or_table=points)
-        include_columns, rename_columns = parse_columns(lines_columns, points_columns, self.global_id, points_id_col, lines_geom_col, points_geom_col)
+        # Otherwise compute candidates afresh
+        # lines_columns = self._backend.get_column_names(engine, gdf_or_table=self._backend.lines)
+        # points_columns = self._backend.get_column_names(engine, gdf_or_table=points)
+        # include_columns, rename_columns = parse_columns(lines_columns, points_columns, self.global_id, points_id_col, lines_geom_col, points_geom_col)
         candidates = self._backend.get_candidates_backend(
             engine=engine, points=points, points_id_col=points_id_col, 
             points_geom_col=points_geom_col, lines_geom_col=lines_geom_col, threshold_m=threshold_m, k=k
         )
-        candidates = candidates[include_columns + ['distance_m']] 
-        candidates = candidates.rename(columns=rename_columns)
+        # candidates = candidates[include_columns + ['distance_m']] 
+        # candidates = candidates.rename(columns=rename_columns)
 
         # Upload candidates to cache
         self._candidates_cache_key = cache_key
@@ -377,6 +382,9 @@ class VectorHydrographyData(HydrographyData):
             Snapped candidates with computed distances.
         """
 
+        lines_columns = self._backend.get_column_names(engine, gdf_or_table=self._backend.lines)
+        points_columns = self._backend.get_column_names(engine, gdf_or_table=points)
+        include_columns, rename_columns = parse_columns(lines_columns, points_columns, self.global_id, points_id_col)
         candidates = self.get_candidates(
             engine=engine, 
             points=points, 
@@ -387,6 +395,8 @@ class VectorHydrographyData(HydrographyData):
             k=None, 
             use_cache=False
         )
+        candidates = candidates[include_columns + ['distance_m']] 
+        candidates = candidates.rename(columns=rename_columns)
         
         candidates['distance_m'] = candidates['distance_m'].clip(lower=threshold_m_lower)
         df, report = _compute_candidate_distances_from_plan(
