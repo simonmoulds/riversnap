@@ -48,8 +48,8 @@ Inputs
 
 You provide:
 
-* a GeoDataFrame of **gauges** (points)
 * a GeoDataFrame of **river reaches** (lines)
+* a GeoDataFrame of **gauges** (points)
 
 The snapping workflow will:
 
@@ -65,15 +65,19 @@ Example
    import geopandas as gpd
    from riversnap import GRIT
 
+   target_crs = 3857 
+
    pts = gpd.read_file("my_gauges.gpkg").to_crs(epsg=3857)
 
-   ds = GRIT(root="/path/to/GRITv1", segments=True, continents=["EU"])
+   ds = GRIT(backend="filesystem", segments=True, continents=['EU'])
+   fs = ds.get_files(root=Path('/path/to/GRITv1/'), continents=['EU'], grit_version=1, srid=target_crs)
+   ds.prepare_data(files=fs, target_crs=srid)
 
    # Candidate generation is handled internally by the filesystem backend
    out = ds.snap(
        pts,
-       id_column="ohdb_id",
-       distance_threshold=5000,
+       id_column="gauge_id",
+       distance_threshold=1500,
        distance_specification=[...],
        return_all=False,
    )
@@ -95,6 +99,10 @@ Typical use cases include:
 * global river datasets (e.g. GRIT)
 * tens of thousands of gauge points
 * repeated snapping experiments with different thresholds and distance plans
+
+If you are working with global river datasets, the PostGIS backend is strongly
+recommended. The initial setup cost of loading the hydrography into PostGIS is 
+offset by the performance gains during candidate generation.
 
 Requirements
 ^^^^^^^^^^^^
@@ -195,34 +203,16 @@ includes:
 When using PostGIS, it is possible for the result to contain duplicate column
 names if both the points table and the lines table share column names
 (e.g. ``id`` or ``geometry``). In these cases, Pandas will preserve the column
-order and allow duplicate names.
-
-In ``riversnap``, duplicate columns can be handled either by:
-
-* explicitly aliasing columns in SQL (recommended for general-purpose outputs),
-  or
-* relying on deterministic column ordering and selecting columns by position in
-  Pandas (useful for performance and low-overhead workflows).
-
-Choosing a backend
-------------------
-
-A practical rule of thumb:
-
-* Use the **GeoDataFrame backend** for small or medium datasets and rapid
-  iteration.
-* Use the **PostGIS backend** for large river hydrographies and repeated
-  candidate generation across many gauges.
-
-If you are working with global river datasets, the PostGIS backend is strongly
-recommended.
+order (points first) and allow duplicate names. To avoid ambiguity when working
+with the output DataFrame, we recommend that you either rename or alias columns
+in your SQL queries.
 
 Docker-based PostGIS quickstart (optional)
 ------------------------------------------
 
 For local development and reproducible examples, a containerised PostGIS
 instance can be started with Docker Compose. A reference ``docker-compose.yml``
-file is provided in the repository (recommended location: ``examples/postgis/``)
+file is provided in the repository (``examples/postgis/``)
 and can be used as a quickstart for local testing and benchmarking.
 
 .. note::
@@ -273,9 +263,13 @@ Indexes
 
 For large datasets, ensure you have a GiST index on geometry columns:
 
-.. code-block:: sql
+.. code-block:: python 
 
-   CREATE INDEX grit_geom_gix ON gritv1_segments USING GIST (geometry);
+   from sqlalchemy import text
+   with engine.begin() as con:
+        con.execute(
+             text("CREATE INDEX IF NOT EXISTS grit_geom_gix ON gritv1_segments USING GIST (geometry);")
+        )
 
 Without this, candidate generation will be slow.
 

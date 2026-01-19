@@ -11,5 +11,5 @@ The source code is available on `GitHub <https://githib.com/simonmoulds/riversna
    quickstart
    distance
    postgis
-   examples
+   tutorials/index.rst
    api

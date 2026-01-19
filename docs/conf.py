@@ -12,7 +12,10 @@ extensions = [
     "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
+    "nbsphinx",
+    "nbsphinx_link",
 ]
+nbspinx_execute = "never"
 
 autosummary_generate = True
 

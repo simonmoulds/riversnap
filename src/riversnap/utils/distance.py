@@ -31,7 +31,7 @@ def d_log_ratio(cand: pd.Series, ref: pd.Series) -> pd.Series:
     and for which proportional over- and under-estimation should be penalised 
     symmetrically.
 
-    Note that if d = |log(cand / ref)| then the percentage error can be computed 
+    Note that if ``d = |log(cand / ref)|`` then the percentage error can be computed 
     as (exp(d) - 1) * 100%.
 
     Parameters

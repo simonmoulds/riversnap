@@ -32,6 +32,7 @@ This will create a directory called `riversnap`. Change into this directory and
 install a local, editable version of riversnap using pip:
 
 .. code-block:: bash
+
    cd riversnap
    pip install -e .
 
@@ -42,12 +43,12 @@ To use riversnap you will need a river hydrography dataset and a set of river
 gauge sites. We suggest starting with the Global River Topology (GRIT) 
 hydrography, and the EStreams gauge dataset. 
 
-GRIT can be downloaded from `Zenodo <https://doi.org/10.5281/zenodo.7629907>`_. 
+GRIT can be downloaded from `Zenodo <https://doi.org/10.5281/zenodo.7629907>`__. 
 For this example we will retrieve `GRITv1.0_segments_EU_EPSG4326.gpkg.zip <https://zenodo.org/records/17435232/files/GRITv1.0_segments_EU_EPSG4326.gpkg.zip?download=1>`_ 
 which contains a GeoPackage file with river segments for Europe in EPSG:4326 
 coordinate reference system.
 
-The EStreams gauge dataset can also be downloaded from `Zenodo <https://doi.org/10.5281/zenodo.10733141>`_. 
+The EStreams gauge dataset can also be downloaded from `Zenodo <https://doi.org/10.5281/zenodo.10733141>`__. 
 We require the gauging stations shapefile, which is contained with the `shapefiles.zip <https://zenodo.org/records/17598150/files/shapefiles.zip?download=1>`_
 archive.
 
@@ -55,6 +56,7 @@ Download these two archives and extract their contents to a suitable location. N
 you might have something like this: 
 
 .. code-block:: text
+
    EStreams/
       shapefiles.zip
       shapefiles/ 
@@ -66,6 +68,7 @@ you might have something like this:
    GRIT/ 
       GRITv1.0_segments_EU_EPSG4326.gpkg.zip
       GRITv1.0_segments_EU_EPSG4326.gpkg
+
 
 Snapping
 --------

@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd 
 import pyogrio 
+import sqlalchemy
 
 from sqlalchemy import create_engine, text, inspect
 from pathlib import Path
@@ -218,7 +219,7 @@ class _PostGISBackend(_HydrographyBackend):
     def prepare_data_backend(self,
                              files=None, 
                              target_crs: int = 3857, 
-                             engine: "sqlalchemy.engine.Engine" | None = None, 
+                             engine: sqlalchemy.engine.Engine | None = None, 
                              table: str = None, 
                              if_exists: str = "fail"): 
 
