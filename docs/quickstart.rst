@@ -41,33 +41,8 @@ Data
 
 To use riversnap you will need a river hydrography dataset and a set of river 
 gauge sites. We suggest starting with the Global River Topology (GRIT) 
-hydrography, and the EStreams gauge dataset. 
-
-GRIT can be downloaded from `Zenodo <https://doi.org/10.5281/zenodo.7629907>`__. 
-For this example we will retrieve `GRITv1.0_segments_EU_EPSG4326.gpkg.zip <https://zenodo.org/records/17435232/files/GRITv1.0_segments_EU_EPSG4326.gpkg.zip?download=1>`_ 
-which contains a GeoPackage file with river segments for Europe in EPSG:4326 
-coordinate reference system.
-
-The EStreams gauge dataset can also be downloaded from `Zenodo <https://doi.org/10.5281/zenodo.10733141>`__. 
-We require the gauging stations shapefile, which is contained with the `shapefiles.zip <https://zenodo.org/records/17598150/files/shapefiles.zip?download=1>`_
-archive.
-
-Download these two archives and extract their contents to a suitable location. Now 
-you might have something like this: 
-
-.. code-block:: text
-
-   EStreams/
-      shapefiles.zip
-      shapefiles/ 
-         estreams_gauging_stations.cpg
-         estreams_gauging_stations.dbf
-         estreams_gauging_stations.prj
-         estreams_gauging_stations.shp
-         estreams_gauging_stations.shx
-   GRIT/ 
-      GRITv1.0_segments_EU_EPSG4326.gpkg.zip
-      GRITv1.0_segments_EU_EPSG4326.gpkg
+hydrography, and the EStreams gauge dataset. We provide a `tutorial <tutorials/hydrography-data.nblink>`_ 
+with download instructions for these datasets. 
 
 
 Snapping

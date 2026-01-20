@@ -1,5 +1,5 @@
-Distance components and diagnostics
-===================================
+Distance components
+===================
 
 Overview 
 --------
@@ -102,52 +102,3 @@ are used:
 
 This consistent naming scheme allows users to easily construct QC rules using
 standard Pandas operations.
-
-Example: distance component specification
------------------------------------------
-
-Distance components are specified as follows:
-
-.. code-block:: python
-
-   specs = [
-       DistanceSpec(
-           name="gauge_dist",
-           cand_col="distance_m",
-           dist_fn="spatial",
-           kwargs={"scale_m": 500.0},
-           diagnostics=("m",),
-       ),
-       DistanceSpec(
-           name="drainage_area",
-           cand_col="cand_area_km2",
-           ref_col="ref_area_km2",
-           dist_fn="scale",
-           diagnostics=("pct", "factor"),
-       ),
-   ]
-
-If a diagnostic cannot be computed for a given component (e.g. because a
-reference value is unavailable), the resulting column will contain missing
-values. 
-
-Example: quality control
-------------------------
-
-A typical workflow is:
-
-1. Rank candidates using the composite distance.
-2. Apply QC criteria using diagnostic columns.
-3. Accept or flag snapped locations accordingly.
-
-For example:
-
-.. code-block:: python
-
-   good = (
-       (df["diag_m_gauge_dist"] <= 250) &
-       (df["diag_pct_drainage_area"] <= 25)
-   )
-
-This approach avoids imposing hard-coded QC rules within ``riversnap`` while
-ensuring that QC thresholds are defined on interpretable scales.
