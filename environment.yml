@@ -2,17 +2,16 @@ name: riversnap
 channels:
   - conda-forge
 dependencies:
-  - python>=3.11
-  - cartopy
-  - gdal
-  - geopandas
-  - matplotlib
+  - python=3.11
+  - pip
   - numpy
   - pandas
-  - pyflwdir
-  - rasterio
-  - scikit-learn
-  - seaborn
-  - shapely
-  - tqdm
-  - typer
+  - geopandas
+  - sqlalchemy
+  - psycopg2
+  - sphinx
+  - sphinx-rtd-theme
+  - nbsphinx
+  - docutils<0.21
+  - pip:
+      - nbsphinx-link

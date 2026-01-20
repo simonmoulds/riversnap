@@ -2,7 +2,6 @@
 import numpy as np
 import pandas as pd
 import geopandas as gpd 
-import pyogrio 
 import sqlalchemy
 
 from sqlalchemy import create_engine, text, inspect
