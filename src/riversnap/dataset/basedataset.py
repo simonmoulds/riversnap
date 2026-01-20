@@ -220,6 +220,7 @@ class _PostGISBackend(_HydrographyBackend):
                              target_crs: int = 3857, 
                              engine: sqlalchemy.engine.Engine | None = None, 
                              table: str = None, 
+                             schema: str = None,
                              if_exists: str = "fail"): 
 
         self.check_file_existence(files) 
@@ -235,7 +236,7 @@ class _PostGISBackend(_HydrographyBackend):
             for f in files:
                 ds = self.load_data(f, target_crs=target_crs)
                 # ds['asset_key'] = continent
-                ds.to_postgis(name=table, con=engine, if_exists=if_exists)
+                ds.to_postgis(name=table, con=engine, schema=schema, if_exists=if_exists)
 
         self.lines = table
         self.srid = target_crs
