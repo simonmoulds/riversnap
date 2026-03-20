@@ -4,7 +4,7 @@ import pandas as pd
 import geopandas as gpd 
 import sqlalchemy
 
-from sqlalchemy import create_engine, text, inspect
+from sqlalchemy import create_engine, text, inspect, quoted_name
 from pathlib import Path
 from typing import List, Optional
 
@@ -224,22 +224,45 @@ class _PostGISBackend(_HydrographyBackend):
                              if_exists: str = "fail"): 
 
         self.check_file_existence(files) 
+        
+        q_schema = quoted_name(schema or "public", quote=True)
+        q_table = quoted_name(table, quote=True)
+        qualified_table = f"{q_schema}.{q_table}"
 
-        # Check existence of table
         with engine.connect() as con:
-            exists = con.execute(text("SELECT to_regclass(:tname) IS NOT NULL"), {"tname": table}).scalar()
+            exists = con.execute(
+                text(f"SELECT to_regclass('{schema or 'public'}.{table}') IS NOT NULL")
+            ).scalar()
 
         if files is None and not exists: 
             raise ValueError("No files provided to initialize PostGIS table, and table does not already exist.")
 
         if not (exists and if_exists == "fail"):
             for f in files:
+                source_name = Path(f).stem
+
+                # Check if this file is already loaded
+                if exists:
+                    with engine.connect() as con:
+                        already_loaded = con.execute(
+                            text(f"SELECT EXISTS (SELECT 1 FROM {qualified_table} WHERE source_file = :src)"),
+                            {"src": source_name}
+                        ).scalar()
+                    if already_loaded:
+                        print(f"Skipping {source_name}, already in table.")
+                        continue
+
                 ds = self.load_data(f, target_crs=target_crs)
-                # ds['asset_key'] = continent
+                ds["source_file"] = source_name
                 ds.to_postgis(name=table, con=engine, schema=schema, if_exists=if_exists)
+                
+                # After first file is loaded, switch to append for subsequent files
+                if_exists = "append"
+                exists = True
+                print(f"Loaded {source_name}.")
 
         self.lines = table
-        self.srid = target_crs
+        self.srid = target_crs       # self.srid = target_crs
 
     def make_candidates_cache_key(self, points, points_id_column, threshold_m): 
         return (points, points_id_column, threshold_m) 
@@ -285,8 +308,12 @@ class _PostGISBackend(_HydrographyBackend):
 
 class HydrographyData:
     """Base class for hydrography datasets."""
+
+    VALID_CONTINENTS: list[str] = []  # to be overridden by subclasses
+
     def __init__(self, 
-                 backend: str = "filesystem"): 
+                 backend: str = "filesystem", 
+                 continents: list[str] | None = None): 
 
         """Initialize a hydrography data source.
 
@@ -305,6 +332,18 @@ class HydrographyData:
 
         self._candidates_cache_key = None 
         self._candidates_cache = None 
+
+        if continents is None:
+            self.continents = self.VALID_CONTINENTS
+        else:
+            if not isinstance(continents, list):
+                raise ValueError('Continents must be provided as a list of continent codes.')
+            if not all(c in self.VALID_CONTINENTS for c in continents):
+                raise ValueError(
+                    f'Invalid continent code in {continents}. '
+                    f'Valid codes are {self.VALID_CONTINENTS}.'
+                )
+            self.continents = continents
 
 class VectorHydrographyData(HydrographyData):
 

@@ -1,9 +1,4 @@
 
-import pandas as pd 
-import geopandas as gpd
-
-from sqlalchemy import create_engine, text, inspect
-
 from typing import Optional, List
 from pathlib import Path 
 
@@ -14,16 +9,17 @@ __all__ = [
     "GRIT",
 ]
 
-
-GRIT_CONTINENTS = ['AF', 'AS', 'EU', 'NA', 'SA', 'SI', 'SP']
+# Separate class for segments and reaches? 
 
 class GRIT(VectorHydrographyData):
     """GRIT vector hydrography dataset loader and candidate generator."""
 
+    VALID_CONTINENTS = ['AF', 'AS', 'EU', 'NA', 'SA', 'SI', 'SP']
+
     def __init__(self, 
                  backend: str,
-                 segments: Optional[bool] = False, 
-                 continents: Optional[list[str]] = None):
+                 continents: list[str] | None = None,
+                 segments: bool = False):
 
         """Initialize a GRIT dataset handle.
 
@@ -37,22 +33,13 @@ class GRIT(VectorHydrographyData):
             List of continent codes to search.
         """
         super().__init__(backend=backend)
-
         self.scale = 'segments' if segments else 'reaches'
         self.global_id = 'global_id' if segments else 'tbc'
 
-        if continents is None: 
-            self.continents = GRIT_CONTINENTS
-        else:
-            if not isinstance(continents, list):
-                raise ValueError('Continents must be provided as a list of continent codes.')
+    def get_files(self, 
+                  root: Path, 
+                  srid: int = 4326) -> list[Path]:
 
-            if not all (c in GRIT_CONTINENTS for c in continents):
-                raise ValueError(f'Invalid continent code in {continents}. Valid codes are {GRIT_CONTINENTS}.')
-            
-            self.continents = continents
-
-    def get_files(self, root, continents: List[str] = GRIT_CONTINENTS, grit_version=1, srid=4326) -> list[Path]:
         """Get list of GRIT data files for specified continents.
 
         Parameters
@@ -71,10 +58,11 @@ class GRIT(VectorHydrographyData):
         list of pathlib.Path
             List of GRIT data file paths.
         """
+        # FIXME this could return a dict with the source continent
         files = []
-        for continent in continents:
-            riv_shp_path =  root / f'GRITv1.0_{self.scale}_{continent.upper()}_EPSG4326.gpkg'
+        for continent in self.continents:
+            riv_shp_path =  root / f'GRITv1.0_{self.scale}_{continent.upper()}_EPSG{srid}.gpkg'
             if riv_shp_path.exists() is False:
-                raise ValueError(f'GRIT data for continent "{continent}" not found at {riv_shp_path}')
+                raise ValueError(f'Data for continent "{continent}" not found at {riv_shp_path}')
             files.append(riv_shp_path)
         return files
