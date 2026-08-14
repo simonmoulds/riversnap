@@ -1,4 +1,6 @@
 
+import os
+
 import numpy as np
 import pandas as pd
 import geopandas as gpd 
@@ -7,6 +9,8 @@ import sqlalchemy
 from sqlalchemy import create_engine, text, inspect, quoted_name
 from pathlib import Path
 from typing import List, Optional
+from dataclasses import dataclass
+from abc import ABC, abstractmethod
 
 from riversnap.utils.distance import _compute_candidate_distances_from_plan
 
@@ -21,8 +25,8 @@ __all__ = [
 EPS = 1e-12
 
 
-def write_points_to_postgis(pts, engine, table, if_exists='replace'): 
-    pts.to_postgis(name=table, con=engine, if_exists=if_exists)
+def write_points_to_postgis(pts, table, engine, schema, if_exists='replace'): 
+    pts.to_postgis(name=table, con=engine, schema=schema, if_exists=if_exists)
     return None 
 
 
@@ -112,7 +116,7 @@ def get_candidates_postgis(engine=None,
     return candidates 
 
 
-class _HydrographyBackend:
+class _HydrographyBackend(ABC):
     def __init__(self): 
         pass
 
@@ -133,7 +137,7 @@ class _HydrographyBackend:
             raise ValueError(f"Files {fs_string} do not exist!")
 
     def load_data(self, file: Path, target_crs: int, **kwargs) -> gpd.GeoDataFrame:
-        """Load and reproject GRIT data for a single continent. This 
+        """Load and reproject data for a single file. This 
         function uses GeoPandas.read_file(...) behind the scenes.
 
         Parameters
@@ -157,7 +161,14 @@ class _HydrographyBackend:
         riv_reproj = riv.to_crs(epsg=target_crs)
         return riv_reproj
 
-    def prepare_data_backend(self):
+    @abstractmethod
+    def prepare_data_backend(self, 
+                             files=None, 
+                             target_crs: int = 3857, 
+                             engine=None, 
+                             table: str | None = None, 
+                             schema: str | None = None,
+                             if_exists: str = "fail"):
 
         raise NotImplementedError()
 
@@ -167,8 +178,14 @@ class _FilesystemBackend(_HydrographyBackend):
                              files=None, 
                              target_crs: int = 3857, 
                              engine=None, 
-                             table: str = None, 
-                             if_exists: str = "fail"): 
+                             table=None, 
+                             schema=None,
+                             if_exists: str = "fail"):
+
+        if engine is not None or table is not None or schema is not None:
+            raise ValueError(
+                "'engine', 'table' and 'schema' are not valid for the filesystem backend."
+            )
 
         self.check_file_existence(files) 
         self.lines = files
@@ -306,15 +323,25 @@ class _PostGISBackend(_HydrographyBackend):
         return candidates
 
 
+@dataclass
+class HydrographyDataConfig: 
+    filepaths: List[Path]
+    global_id_col: str
+    source_crs: int 
+    # target_crs: int 
+    # backend: str = "filesystem"
+    # files: Optional[List[Path]] = None
+    # target_crs: int = 3857
+    # engine: Optional[sqlalchemy.engine.Engine] = None
+    # table: Optional[str] = None
+    # schema: Optional[str] = None
+    # if_exists: str = "fail"
+
+
 class HydrographyData:
     """Base class for hydrography datasets."""
 
-    VALID_CONTINENTS: list[str] = []  # to be overridden by subclasses
-
-    def __init__(self, 
-                 backend: str = "filesystem", 
-                 continents: list[str] | None = None): 
-
+    def __init__(self, config: HydrographyDataConfig, backend: str):
         """Initialize a hydrography data source.
 
         Parameters
@@ -322,7 +349,7 @@ class HydrographyData:
         backend : str
             The backend to use. Either "filesystem" or "postgis".
         """
-        self.backend = backend
+        self.config = config 
         if backend == "filesystem":
             self._backend = _FilesystemBackend() #files=..., srid=srid)
         elif backend == "postgis":
@@ -333,22 +360,46 @@ class HydrographyData:
         self._candidates_cache_key = None 
         self._candidates_cache = None 
 
-        if continents is None:
-            self.continents = self.VALID_CONTINENTS
-        else:
-            if not isinstance(continents, list):
-                raise ValueError('Continents must be provided as a list of continent codes.')
-            if not all(c in self.VALID_CONTINENTS for c in continents):
-                raise ValueError(
-                    f'Invalid continent code in {continents}. '
-                    f'Valid codes are {self.VALID_CONTINENTS}.'
-                )
-            self.continents = continents
+        self._get_files() 
+
+    def _get_files(self) -> list[Path]:
+        """Get list of data files
+        
+        Returns
+        -------
+        list of pathlib.Path
+        """
+        abs_filepaths = []
+        for file in self.config.filepaths: 
+            abs_filepath = Path(os.path.abspath(file))
+            if not abs_filepath.exists():
+                raise ValueError(f"File {abs_filepath} does not exist!")
+            abs_filepaths.append(abs_filepath)
+        self._files = abs_filepaths 
+
+    @property 
+    def files(self) -> list[Path]:
+        return self._files
+
 
 class VectorHydrographyData(HydrographyData):
 
-    def prepare_data(self, **kwargs):
-        self._backend.prepare_data_backend(**kwargs)
+    def prepare_data(self, 
+                     files=None, 
+                     target_crs: int = 3857, 
+                     engine=None, 
+                     table: str | None = None, 
+                     schema: str | None = None,
+                     if_exists: str = "fail"):
+
+        self._backend.prepare_data_backend(
+            files=files or self.files, 
+            target_crs=target_crs, 
+            engine=engine, 
+            table=table, 
+            schema=schema,
+            if_exists=if_exists
+        )
 
     def get_candidates(self, 
                        engine=None,
@@ -371,7 +422,7 @@ class VectorHydrographyData(HydrographyData):
         # Otherwise compute candidates afresh
         # lines_columns = self._backend.get_column_names(engine, gdf_or_table=self._backend.lines)
         # points_columns = self._backend.get_column_names(engine, gdf_or_table=points)
-        # include_columns, rename_columns = parse_columns(lines_columns, points_columns, self.global_id, points_id_col, lines_geom_col, points_geom_col)
+        # include_columns, rename_columns = parse_columns(lines_columns, points_columns, self.GLOBAL_ID, points_id_col, lines_geom_col, points_geom_col)
         candidates = self._backend.get_candidates_backend(
             engine=engine, points=points, points_id_col=points_id_col, 
             points_geom_col=points_geom_col, lines_geom_col=lines_geom_col, threshold_m=threshold_m, k=k
@@ -395,6 +446,7 @@ class VectorHydrographyData(HydrographyData):
              distance_specification: list = None,
              aggregation_method: str = "weighted_mean",
              return_all=False): 
+
         """Snap points to candidate lines and compute distances.
 
         Parameters
@@ -424,7 +476,14 @@ class VectorHydrographyData(HydrographyData):
 
         lines_columns = self._backend.get_column_names(engine, gdf_or_table=self._backend.lines)
         points_columns = self._backend.get_column_names(engine, gdf_or_table=points)
-        include_columns, rename_columns = parse_columns(lines_columns, points_columns, self.global_id, points_id_col)
+        include_columns, rename_columns = parse_columns(
+            lines_columns, 
+            points_columns, 
+            self.GLOBAL_ID, 
+            points_id_col, 
+            "geometry", 
+            "geometry"
+        )
         candidates = self.get_candidates(
             engine=engine, 
             points=points, 
@@ -446,7 +505,7 @@ class VectorHydrographyData(HydrographyData):
             require_any=True, 
         )
         keep_cols = (
-            [points_id_col, self.global_id] 
+            [points_id_col, self.GLOBAL_ID] 
             + report.attribute_cols 
             + report.distance_component_cols 
             + report.diagnostic_cols
